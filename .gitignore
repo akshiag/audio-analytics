@@ -9,4 +9,5 @@ wheels/
 .coverage*
 # Virtual environments
 .venv
+.idea/*
 

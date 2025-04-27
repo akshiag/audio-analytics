@@ -1,26 +1,34 @@
+import os
 import tempfile
-import time
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, UploadFile
 from sqlalchemy.orm import Session
 
-from app.asr_service import transcribe
-from app.audio_utils import get_audio_duration
-from app.db import engine, get_db, get_db_commit
-from app.models import Base
-from app.schemas import AnalyzeResponse, StatsResponse
-from app.services.stats_service import get_statistics
-from app.services.transcription_service import save_transcription
+from app.db import engine, get_db, get_db_commit  # Database engine and session dependencies
+from app.kafka_producer import kafka_task_producer  # Kafka producer for queuing tasks
+from app.models import Base  # SQLAlchemy models
+from app.schemas import AnalyzeResponse, StatsResponse  # Pydantic schemas for API responses
+from app.services.stats_service import get_statistics  # Service to retrieve statistics
+from app.services.transcription_service import process_audio_and_save  # Service to process and save transcriptions
 
+# --- Load Environment Variables ---
 load_dotenv()  # Load environment variables from a .env file
 
-# Initialize the FastAPI application
+# --- Settings ---
+# Check if Kafka is enabled via the USE_KAFKA environment variable
+USE_KAFKA = os.getenv("USE_KAFKA", "false").lower() == "true"
+
+# --- Initialize FastAPI App ---
+# Create a FastAPI application with metadata
 app = FastAPI(
     title="Audio to Text Microservice",
-    version="1.0.0"
+    version="1.0.0",
+    description="Upload audio files for transcription using Faster-Whisper. "
+                "Supports direct processing or Kafka-based queueing."
 )
 
+# --- Database Setup ---
 # Create database tables if they do not exist
 Base.metadata.create_all(bind=engine)
 
@@ -29,7 +37,7 @@ Base.metadata.create_all(bind=engine)
 @app.get("/", tags=["Landing"])
 async def root() -> dict:
     """
-    Landing page of the Audio to Text Microservice.
+    Landing page providing basic information and available endpoints.
 
     Returns:
         dict: A welcome message and available endpoints.
@@ -39,51 +47,44 @@ async def root() -> dict:
         "available_endpoints": {
             "POST /analyze": "Upload an audio file and receive transcription",
             "GET /stats": "View transcription statistics",
-            "Docs": "/docs (Swagger UI)"
+            "Swagger Docs": "/docs"
         }
     }
 
-@app.post("/analyze", response_model=AnalyzeResponse)
+@app.post("/analyze", response_model=AnalyzeResponse, tags=["Audio Analysis"])
 async def analyze_audio(file: UploadFile = File(...),
                         db: Session = Depends(get_db_commit)) -> AnalyzeResponse:
     """
-    Analyze an uploaded audio file and return its transcription, processing time, and duration.
+    Analyzes an uploaded audio file:
+    - If Kafka is enabled, the tasks are queued for processing.
+    - If not, the transcription is processed immediately.
 
     Args:
-        file (UploadFile): The uploaded audio file.
+        file (UploadFile): Uploaded audio file.
         db (Session): SQLAlchemy database session.
 
     Returns:
-        AnalyzeResponse: The transcription, processing time, and audio duration.
+        AnalyzeResponse: Transcription, processing time, and audio duration.
     """
     # Create a temporary file to store the uploaded audio
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        tmp.write(await file.read())
-        tmp_path: str = tmp.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(await file.read())  # Write the uploaded file content to the temporary file
+        tmp_path = tmp.name  # Get the path of the temporary file
 
-    # Measure the start time for processing
-    start_time: float = time.time()
+    if USE_KAFKA:
+        # If Kafka is enabled, send the task to the Kafka queue
+        kafka_task_producer.send_task({"file_path": tmp_path})
+        return AnalyzeResponse(
+            text="Task queued for processing.",
+            processing_time=0.0,
+            audio_duration=0.0
+        )
 
-    # Transcribe the audio file
-    transcription_result: dict = await transcribe(tmp_path)
-    text: str = transcription_result["text"]
+    # If Kafka is not enabled, process the audio file immediately
+    result = await process_audio_and_save(db, tmp_path)
+    return result
 
-    # Calculate processing time and audio duration
-    processing_time: float = round(time.time() - start_time, 2)
-    audio_duration: float = get_audio_duration(tmp_path)
-
-    # Save the transcription details to the database
-    save_transcription(db=db, text=text, audio_duration=audio_duration,
-                       processing_time=processing_time)
-
-    # Return the transcription details
-    return AnalyzeResponse(
-        text=text,
-        processing_time=processing_time,
-        audio_duration=audio_duration
-    )
-
-@app.get("/stats", response_model=StatsResponse)
+@app.get("/stats", response_model=StatsResponse, tags=["Statistics"])
 async def stats(db: Session = Depends(get_db)) -> StatsResponse:
     """
     Retrieve statistics about the transcriptions stored in the database.
@@ -92,6 +93,6 @@ async def stats(db: Session = Depends(get_db)) -> StatsResponse:
         db (Session): SQLAlchemy database session.
 
     Returns:
-        StatsResponse: Statistics including total calls, median latency, and median audio length.
+        StatsResponse: Total calls, median latency, and median audio length.
     """
-    return get_statistics(db)
+    return get_statistics(db)  # Fetch and return transcription statistics

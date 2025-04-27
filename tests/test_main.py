@@ -53,7 +53,18 @@ def test_landing_page():
     assert data["message"].startswith("Welcome to the Audio to Text Microservice")
     assert "POST /analyze" in data["available_endpoints"]
     assert "GET /stats" in data["available_endpoints"]
-    assert "Docs" in data["available_endpoints"]
+    assert "Swagger Docs" in data["available_endpoints"]
+
+def test_stats_empty_database(db_session):
+    """Test stats endpoint returns 0 when there are no transcriptions."""
+    stats_response = client.get("/stats")
+    assert stats_response.status_code == 200
+    stats = stats_response.json()
+
+    assert stats["total_calls"] == 0
+    assert stats["median_latency"] == 0
+    assert stats["median_audio_length"] == 0
+
 
 def test_stats_with_known_insertions(db_session):
     """Insert known transcriptions and check exact stats."""

@@ -10,4 +10,5 @@ wheels/
 # Virtual environments
 .venv
 .idea/*
+audio_analytics.db
 

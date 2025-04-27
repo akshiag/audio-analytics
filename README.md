@@ -111,3 +111,25 @@ Coverage report will be printed in the terminal after tests.
 - This .env file does not contain any sensitive information or credentials — only a local DATABASE_URL for SQLite testing.
 
 - This is provided to make local setup and testing easier for reviewers and developers.
+
+## Kafka Support (Optional Scaling)
+
+If you want to run with Kafka Queue enabled:
+
+1. Set up Kafka and Zookeeper using Docker Compose:
+    ```
+    docker-compose -f docker-compose.kafka.yml up -d
+    ```
+
+2. Set this environment variable in .env to enable Kafka:
+
+    ```
+    USE_KAFKA=true
+    ```
+3. Run the Kafka consumer worker separately to process queued tasks:
+
+    ```
+    PYTHONPATH=. python app/consumer_worker.py
+    ```
+
+In case of high load, we can easily scale the system horizontally by increasing Kafka topic partitions and running multiple consumers in the same group. This ensures that audio transcription tasks are processed concurrently across multiple worker instances, providing fault tolerance and much faster throughput.
